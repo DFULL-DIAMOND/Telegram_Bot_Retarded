@@ -54,11 +54,12 @@ namespace TelegramBotDemo
                     // Пытаемся превратить текст в число
                     if (decimal.TryParse(text, out var amount) && amount > 0)
                     {
-                        // Создаем клавиатуру для быстрого доступа (чтобы не писать /menu заново)
+                        // Создаем клавиатуру для быстрого доступа
                         var quickKeyboard = new InlineKeyboardMarkup(new[]
                         {
                             new[] { InlineKeyboardButton.WithCallbackData("➕ Положить", "deposit") },
-                            new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") }
+                            new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") },
+                            new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") } // Новая кнопка
                         });
 
                         if (state == "awaiting_deposit")
@@ -144,12 +145,13 @@ namespace TelegramBotDemo
                 else if (data == "balance")
                 {
                     var balance = UserBalances.GetOrAdd(chatId.Value, 0);
-                    var keyboard = new InlineKeyboardMarkup(new[]
+                    var balanceKeyboard = new InlineKeyboardMarkup(new[]
                     {
                         new[] { InlineKeyboardButton.WithCallbackData("➕ Положить", "deposit") },
-                        new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") }
+                        new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") },
+                        new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") } // Новая кнопка
                     });
-                    await botClient.SendMessage(chatId.Value, $"💰 Ваш баланс: {balance} руб.\nВыберите действие:", replyMarkup: keyboard, cancellationToken: cancellationToken);
+                    await botClient.SendMessage(chatId.Value, $"💰 Ваш баланс: {balance} руб.\nВыберите действие:", replyMarkup: balanceKeyboard, cancellationToken: cancellationToken);
                 }
                 else if (data == "deposit")
                 {
@@ -160,6 +162,16 @@ namespace TelegramBotDemo
                 {
                     UserStates[chatId.Value] = "awaiting_withdraw"; // Запоминаем, что ждем сумму
                     await botClient.SendMessage(chatId.Value, "Введите сумму для снятия (в рублях):", cancellationToken: cancellationToken);
+                }
+                else if (data == "menu")
+                {
+                    // Возвращаем пользователя в главное меню
+                    var mainKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[] { InlineKeyboardButton.WithCallbackData("👤 Профиль", "profile") },
+                        new[] { InlineKeyboardButton.WithCallbackData("💰 Баланс", "balance") }
+                    });
+                    await botClient.SendMessage(chatId.Value, "Главное меню:", replyMarkup: mainKeyboard, cancellationToken: cancellationToken);
                 }
             }
         }
