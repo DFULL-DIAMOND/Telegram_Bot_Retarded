@@ -9,6 +9,6 @@ namespace Telegram_Bot_Retarded
     {
         [DatabaseGenerated(DatabaseGeneratedOption.None)] // <-- Добавить эту строку
         public long Id { get; set; } // Telegram ChatId (первичный ключ)
-        public decimal Balance { get; set; } // Баланс пользователя
+        public decimal Balance { get; set; } // Баланс пользователя6
     }
 }
