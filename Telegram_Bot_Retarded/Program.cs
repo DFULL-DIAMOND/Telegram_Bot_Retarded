@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot;
@@ -7,7 +8,7 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
-using Telegram_Bot_Retarded;
+using Telegram_Bot_Retarded; // Ваше пространство имен для AppDbContext и BotUser
 
 namespace TelegramBotDemo
 {
@@ -17,12 +18,13 @@ namespace TelegramBotDemo
 
         static async Task Main(string[] args)
         {
-            // Инициализация БД (создаст файл/базу при первом запуске, если её нет)
+            // Инициализация БД
             using (var db = new AppDbContext())
             {
                 db.Database.EnsureCreated();
             }
 
+            // ВАЖНО: Вставьте сюда ваш токен
             var bot = new TelegramBotClient("8617478637:AAFxP6Qh9M-xVWk_YR7055v--uDb47JtTj8");
             using var cts = new CancellationTokenSource();
 
@@ -30,7 +32,6 @@ namespace TelegramBotDemo
             {
                 AllowedUpdates = new[] { UpdateType.Message, UpdateType.CallbackQuery }
             };
-
 
             bot.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, cts.Token);
 
@@ -46,7 +47,7 @@ namespace TelegramBotDemo
             if (chatId == null) return;
 
             // ==========================================
-            // 1. ОБРАБОТКА ТЕКСТА (Ввод суммы)
+            // 1. ОБРАБОТКА ТЕКСТА (Ввод суммы и команды)
             // ==========================================
             if (update.Type == UpdateType.Message && update.Message?.Text != null)
             {
@@ -58,18 +59,16 @@ namespace TelegramBotDemo
                     // Пытаемся превратить текст в число
                     if (decimal.TryParse(text, out var amount) && amount > 0)
                     {
-                        // Создаем клавиатуру для быстрого доступа
                         var quickKeyboard = new InlineKeyboardMarkup(new[]
                         {
                             new[] { InlineKeyboardButton.WithCallbackData("➕ Положить", "deposit") },
                             new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") },
-                            new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") } // Новая кнопка
+                            new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") }
                         });
 
                         if (state == "awaiting_deposit")
                         {
                             using var db = new AppDbContext();
-                            // Ищем пользователя в БД. Если нет — создаем нового.
                             var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
                             if (user == null)
                             {
@@ -77,8 +76,8 @@ namespace TelegramBotDemo
                                 db.Users.Add(user);
                             }
 
-                            user.Balance += amount; // Пополняем баланс
-                            db.SaveChanges(); // Сохраняем изменения в БД
+                            user.Balance += amount;
+                            db.SaveChanges();
 
                             await botClient.SendMessage(chatId.Value,
                                 $"✅ Счет пополнен на {amount} руб.\n\n💰 Ваш текущий баланс: {user.Balance} руб.",
@@ -97,8 +96,8 @@ namespace TelegramBotDemo
 
                             if (user.Balance >= amount)
                             {
-                                user.Balance -= amount; // Снимаем деньги
-                                db.SaveChanges(); // Сохраняем изменения
+                                user.Balance -= amount;
+                                db.SaveChanges();
 
                                 await botClient.SendMessage(chatId.Value,
                                     $"✅ Списано {amount} руб.\n\n💰 Ваш текущий баланс: {user.Balance} руб.",
@@ -112,9 +111,8 @@ namespace TelegramBotDemo
                             }
                         }
 
-                        // Сбрасываем состояние (ввод завершен)
                         UserStates.TryRemove(chatId.Value, out _);
-                        return; // Выходим, чтобы не обрабатывать это как команду
+                        return;
                     }
                     else
                     {
@@ -126,36 +124,94 @@ namespace TelegramBotDemo
                 // Обработка стандартных команд
                 if (text == "/start")
                 {
-                    await botClient.SendMessage(chatId.Value, "Привет! Используй /menu.", cancellationToken: cancellationToken);
-                }
-                else if (text == "/menu")
-                {
-                    var keyboard = new InlineKeyboardMarkup(new[]
+                    var fromUser = update.Message.From;
+                    var displayName = fromUser?.Username != null
+                        ? $"@{fromUser.Username}"
+                        : (fromUser?.FirstName ?? "друг");
+
+                    var startText = $"🚀 *Добро пожаловать, {displayName}!*\n\n" +
+                                    $"Этот бот создан для демонстрации работы с базами данных и обработки состояний.\n\n" +
+                                    $"Нажми /menu или кнопку ниже, чтобы открыть главное меню.";
+
+                    var replyKeyboard = new ReplyKeyboardMarkup(new[]
                     {
-                        new[] { InlineKeyboardButton.WithCallbackData("👤 Профиль", "profile") },
-                        new[] { InlineKeyboardButton.WithCallbackData("💰 Баланс", "balance") }
-                    });
-                    await botClient.SendMessage(chatId.Value, "Выберите раздел:", replyMarkup: keyboard, cancellationToken: cancellationToken);
+                        new KeyboardButton[] { "📋 Главное меню" }
+                    })
+                    {
+                        ResizeKeyboard = true,
+                        IsPersistent = true
+                    };
+
+                    await botClient.SendMessage(
+                        chatId.Value,
+                        startText,
+                        replyMarkup: replyKeyboard,
+                        parseMode: ParseMode.Markdown,
+                        cancellationToken: cancellationToken);
+                }
+                else if (text == "/menu" || text == "📋 Главное меню")
+                {
+                    // Передаем имя из текстового сообщения
+                    await ShowMainMenu(botClient, chatId.Value, update.Message.From?.FirstName, cancellationToken);
                 }
             }
 
             // ==========================================
-            // 2. ОБРАБОТКА НАЖАТИЙ НА КНОПКИ
+            // 2. ОБРАБОТКА НАЖАТИЙ НА INLINE-КНОПКИ
             // ==========================================
             else if (update.Type == UpdateType.CallbackQuery && update.CallbackQuery is { } query)
             {
-                await botClient.AnswerCallbackQuery(query.Id, cancellationToken: cancellationToken);
+                try
+                {
+                    await botClient.AnswerCallbackQuery(query.Id, cancellationToken: cancellationToken);
+                }
+                catch (Telegram.Bot.Exceptions.ApiRequestException ex)
+                {
+                    if (!ex.Message.Contains("query is too old"))
+                    {
+                        Console.WriteLine($"Ошибка при AnswerCallbackQuery: {ex.Message}");
+                    }
+                }
+
                 var data = query.Data;
 
                 if (data == "profile")
                 {
-                    await botClient.SendMessage(chatId.Value, "👤 Раздел «Профиль» пока в разработке.", cancellationToken: cancellationToken);
+                    using var db = new AppDbContext();
+                    var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
+                    var balance = user?.Balance ?? 0;
+
+                    var tgUser = query.From;
+                    var firstName = tgUser.FirstName;
+                    var username = tgUser.Username != null ? $"@{tgUser.Username}" : "не указан";
+
+                    var profileText = $"👤 **Ваш профиль**\n\n" +
+                                      $"🆔 ID: `{chatId.Value}`\n" +
+                                      $"📛 Имя: {firstName}\n" +
+                                      $"🔗 Username: {username}\n" +
+                                      $"💰 Баланс: {balance} руб.";
+
+                    var profileKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") }
+                    });
+
+                    await botClient.SendMessage(
+                        chatId.Value,
+                        profileText,
+                        replyMarkup: profileKeyboard,
+                        parseMode: ParseMode.Markdown,
+                        cancellationToken: cancellationToken);
                 }
                 else if (data == "balance")
                 {
                     using var db = new AppDbContext();
                     var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
-                    var balance = user?.Balance ?? 0; // Если пользователя нет, баланс 0
+                    var balance = user?.Balance ?? 0;
+
+                    var balanceText = $"💰 *Твой кошелек*\n\n" +
+                                      $"Доступно средств: *{balance} руб.*\n\n" +
+                                      $"Что хочешь сделать? 👇";
 
                     var balanceKeyboard = new InlineKeyboardMarkup(new[]
                     {
@@ -163,29 +219,59 @@ namespace TelegramBotDemo
                         new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") },
                         new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") }
                     });
-                    await botClient.SendMessage(chatId.Value, $"💰 Ваш баланс: {balance} руб.\nВыберите действие:", replyMarkup: balanceKeyboard, cancellationToken: cancellationToken);
+
+                    await botClient.SendMessage(
+                        chatId.Value,
+                        balanceText,
+                        replyMarkup: balanceKeyboard,
+                        parseMode: ParseMode.Markdown,
+                        cancellationToken: cancellationToken);
                 }
                 else if (data == "deposit")
                 {
-                    UserStates[chatId.Value] = "awaiting_deposit"; // Запоминаем, что ждем сумму
+                    UserStates[chatId.Value] = "awaiting_deposit";
                     await botClient.SendMessage(chatId.Value, "Введите сумму для пополнения (в рублях):", cancellationToken: cancellationToken);
                 }
                 else if (data == "withdraw")
                 {
-                    UserStates[chatId.Value] = "awaiting_withdraw"; // Запоминаем, что ждем сумму
+                    UserStates[chatId.Value] = "awaiting_withdraw";
                     await botClient.SendMessage(chatId.Value, "Введите сумму для снятия (в рублях):", cancellationToken: cancellationToken);
                 }
                 else if (data == "menu")
                 {
-                    // Возвращаем пользователя в главное меню
-                    var mainKeyboard = new InlineKeyboardMarkup(new[]
-                    {
-                        new[] { InlineKeyboardButton.WithCallbackData("👤 Профиль", "profile") },
-                        new[] { InlineKeyboardButton.WithCallbackData("💰 Баланс", "balance") }
-                    });
-                    await botClient.SendMessage(chatId.Value, "Главное меню:", replyMarkup: mainKeyboard, cancellationToken: cancellationToken);
+                    // ИСПРАВЛЕНО: при клике на кнопку берем имя из query.From, а не из update.Message
+                    await ShowMainMenu(botClient, chatId.Value, query.From?.FirstName, cancellationToken);
                 }
             }
+        }
+
+        // ==========================================
+        // 3. ВЫНЕСЕННЫЙ МЕТОД ДЛЯ ОТОБРАЖЕНИЯ МЕНЮ
+        // ==========================================
+        private static async Task ShowMainMenu(ITelegramBotClient botClient, long chatId, string? firstName, CancellationToken ct)
+        {
+            using var db = new AppDbContext();
+            var user = db.Users.FirstOrDefault(u => u.Id == chatId);
+            var balance = user?.Balance ?? 0;
+            var displayName = firstName ?? "друг";
+
+            var menuText = $"👋 Привет, *{displayName}*!\n\n" +
+                           $"Я твой финансовый помощник.\n\n" +
+                           $"💳 Твой текущий баланс: *{balance} руб.*\n\n" +
+                           $"Выбери действие на клавиатуре ниже 👇";
+
+            var keyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("👤 Профиль", "profile") },
+                new[] { InlineKeyboardButton.WithCallbackData("💰 Баланс", "balance") }
+            });
+
+            await botClient.SendMessage(
+                chatId: chatId,
+                text: menuText,
+                replyMarkup: keyboard,
+                parseMode: ParseMode.Markdown,
+                cancellationToken: ct);
         }
 
         private static Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
