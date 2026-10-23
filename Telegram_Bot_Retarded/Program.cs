@@ -7,19 +7,22 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using Telegram_Bot_Retarded;
 
 namespace TelegramBotDemo
 {
     internal class Program
     {
-        // Хранилище балансов пользователей (ChatId -> Баланс)
-        private static readonly ConcurrentDictionary<long, decimal> UserBalances = new();
-
-        // Хранилище состояний пользователей (ChatId -> Текущее действие)
         private static readonly ConcurrentDictionary<long, string> UserStates = new();
 
         static async Task Main(string[] args)
         {
+            // Инициализация БД (создаст файл/базу при первом запуске, если её нет)
+            using (var db = new AppDbContext())
+            {
+                db.Database.EnsureCreated();
+            }
+
             var bot = new TelegramBotClient("8617478637:AAFxP6Qh9M-xVWk_YR7055v--uDb47JtTj8");
             using var cts = new CancellationTokenSource();
 
@@ -27,6 +30,7 @@ namespace TelegramBotDemo
             {
                 AllowedUpdates = new[] { UpdateType.Message, UpdateType.CallbackQuery }
             };
+
 
             bot.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, cts.Token);
 
@@ -64,42 +68,47 @@ namespace TelegramBotDemo
 
                         if (state == "awaiting_deposit")
                         {
-                            // Пополняем баланс
-                            UserBalances.AddOrUpdate(chatId.Value, amount, (key, oldValue) => oldValue + amount);
+                            using var db = new AppDbContext();
+                            // Ищем пользователя в БД. Если нет — создаем нового.
+                            var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
+                            if (user == null)
+                            {
+                                user = new BotUser { Id = chatId.Value, Balance = 0 };
+                                db.Users.Add(user);
+                            }
 
-                            // Получаем актуальный баланс для вывода
-                            var currentBalance = UserBalances[chatId.Value];
+                            user.Balance += amount; // Пополняем баланс
+                            db.SaveChanges(); // Сохраняем изменения в БД
 
-                            await botClient.SendMessage(
-                                chatId.Value,
-                                $"✅ Счет пополнен на {amount} руб.\n\n💰 Ваш текущий баланс: {currentBalance} руб.",
-                                replyMarkup: quickKeyboard,
-                                cancellationToken: cancellationToken);
+                            await botClient.SendMessage(chatId.Value,
+                                $"✅ Счет пополнен на {amount} руб.\n\n💰 Ваш текущий баланс: {user.Balance} руб.",
+                                replyMarkup: quickKeyboard, cancellationToken: cancellationToken);
                         }
                         else if (state == "awaiting_withdraw")
                         {
-                            var currentBalance = UserBalances.GetOrAdd(chatId.Value, 0);
-                            if (currentBalance >= amount)
+                            using var db = new AppDbContext();
+                            var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
+                            if (user == null)
                             {
-                                // Снимаем деньги
-                                UserBalances.AddOrUpdate(chatId.Value, 0, (key, oldValue) => oldValue - amount);
+                                user = new BotUser { Id = chatId.Value, Balance = 0 };
+                                db.Users.Add(user);
+                                db.SaveChanges();
+                            }
 
-                                // Получаем актуальный баланс для вывода
-                                var newBalance = UserBalances[chatId.Value];
+                            if (user.Balance >= amount)
+                            {
+                                user.Balance -= amount; // Снимаем деньги
+                                db.SaveChanges(); // Сохраняем изменения
 
-                                await botClient.SendMessage(
-                                    chatId.Value,
-                                    $"✅ Списано {amount} руб.\n\n💰 Ваш текущий баланс: {newBalance} руб.",
-                                    replyMarkup: quickKeyboard,
-                                    cancellationToken: cancellationToken);
+                                await botClient.SendMessage(chatId.Value,
+                                    $"✅ Списано {amount} руб.\n\n💰 Ваш текущий баланс: {user.Balance} руб.",
+                                    replyMarkup: quickKeyboard, cancellationToken: cancellationToken);
                             }
                             else
                             {
-                                await botClient.SendMessage(
-                                    chatId.Value,
-                                    $"❌ Недостаточно средств! Ваш баланс: {currentBalance} руб.",
-                                    replyMarkup: quickKeyboard,
-                                    cancellationToken: cancellationToken);
+                                await botClient.SendMessage(chatId.Value,
+                                    $"❌ Недостаточно средств! Ваш баланс: {user.Balance} руб.",
+                                    replyMarkup: quickKeyboard, cancellationToken: cancellationToken);
                             }
                         }
 
@@ -144,12 +153,15 @@ namespace TelegramBotDemo
                 }
                 else if (data == "balance")
                 {
-                    var balance = UserBalances.GetOrAdd(chatId.Value, 0);
+                    using var db = new AppDbContext();
+                    var user = db.Users.FirstOrDefault(u => u.Id == chatId.Value);
+                    var balance = user?.Balance ?? 0; // Если пользователя нет, баланс 0
+
                     var balanceKeyboard = new InlineKeyboardMarkup(new[]
                     {
                         new[] { InlineKeyboardButton.WithCallbackData("➕ Положить", "deposit") },
                         new[] { InlineKeyboardButton.WithCallbackData("➖ Снять", "withdraw") },
-                        new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") } // Новая кнопка
+                        new[] { InlineKeyboardButton.WithCallbackData("⬅️ В меню", "menu") }
                     });
                     await botClient.SendMessage(chatId.Value, $"💰 Ваш баланс: {balance} руб.\nВыберите действие:", replyMarkup: balanceKeyboard, cancellationToken: cancellationToken);
                 }
